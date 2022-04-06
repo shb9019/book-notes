@@ -240,3 +240,76 @@
 - Some runtimes can switch collectors depending on available heap size.
 - Hotspot collector tunes performance against user-supplied throughput and max pause time goals, adjusting the size of spaces within the heap.
 - Measure application behavior, and lifetime distributions of the objects. Then experiment with different collector configurations.
+
+# 7. Allocation
+
+- Key differences between automatic and explicit freeing that have an impact on allocation strategies,
+    - Garbage collected systems free space all at once rather than one object at a time.
+    - Many GC systems have more information when allocating, such as static knowledge of the size and type of object allocated.
+    - Because of GCs, users will write programs in a different styles and likely to use heap more often.
+
+## 7.1 Sequential allocation
+
+- Uses large chunk of memory. Given request for n bytes, allocates that much from one end of the free chunk.
+- Only requires a free pointer and limit pointer.
+- Called bump pointer allocation, or linear allocation.
+- May lead to fragmentation in non-moving collectors.
+- Simple, efficient and has better cache locality than free-list.
+
+## 7.2 Free-list allocation
+
+- A data structure records the location and size of free cells of memory.
+- Allocator considers each free cell and chooses one to allocate according to a policy.
+- **First-fit allocation**
+    - Allocator chooses first cell that can satisfy allocation request.
+    - If cell is larger than required, the allocator may *split* the cell. Depends on alignment requirements and size of remainder.
+    - Small remainder cells accumulate near front of the list, slowing allocation.
+    - GCs generally build free lists in increasing address order.
+- **Next-fit allocation**
+    - Starts search for a cell of suitable size from the point in list where the last search ended.
+    - When end of list is reached, start again from head. Also called circular first-fit allocation.
+    - Objects from different phases of mutator execution are mixed together.
+    - Poor locality because pointer cycles through all free cells.
+- **Best-fit allocation**
+    - Finds cell whose size most closely matches the request. Minimize waste and avoid splitting large cells.
+    - Performs well in practice with relatively low wasted space.
+- **Spreading free-list allocation**
+    - Balanced binary tree of free cells is faster than using a list.
+    - Order tree by size for best-fit, and by address for first-fit and next-fit.
+    - Cartesian tree indexed by both address (primary key) and size (secondary key) can be used for first and next fit. Ordered on addresses, but organized as a heap for the sizes.
+    - Balanced binary trees improve worst-case behavior from linear to logarithmic in the number of free cells.
+- Bitmapped-fits allocation uses a separate bitmap with one bit for each granule of the allocatable heap. This bitmap can be scanned to identify free cells.
+- Bitmapped-fits does not require any per-object overhead. Compact bitmap leads to fewer cache misses.
+
+## 7.3 Fragmentation
+
+- Dispersal of free memory across a possibly large number of small free cells.
+- Fragmentation can prevent allocation even if total free space is greater than allocation request. Fragmentation may cause a program to use more address space, more resident pages and more cache lines.
+- Given a sequence of known allocation requests, it is not possible to find smallest amount of space necessary to allocate all. NP Hard.
+- Compaction or copying collection is the only proper solution.
+
+## 7.4 Segregated-fits allocation
+
+- Basic free-list allocations spend most time searching for free cell. This allocation uses multiple free-lists whose members are segregated by size.
+- k size values → $s_0 < s_1 < ... < s_{k-1}$. Called size classes.
+- k+1 free lists → $f_0, f_1,...f_k$
+- Size of free cell on list $f_i$ → $s_{i-1}<b<=s_i$ ; $s_{-1} = 0$ ; $s_k = \infin$
+- To simplify and avoid searching, size of free cell of list $f_i$ is $s_i$. For $f_k$, size of cell is $> s_{k-1}$.
+- For cells in $f_k$, use basic single-list algorithms using cartesian tree or other DS. Object creation cost for large objects is usually much larger than cost of finding free cell.
+- To speed up calculation of appropriate size class, they can be evenly spaced $s_i = s_0 + c.i$, then allocation of size b goes to size class $s_j$ where $j = \lfloor (b - s_0 + c - 1) / c \rfloor$ .
+- For size classes other than $s_k$, allocation requires constant time.
+
+### 7.4.1 Fragmentation
+
+- Simple free-list allocators have only external fragmentation. Unusable space outside any allocated cell.
+- Segregated-fits introduces internal fragmentation. Space is wasted inside an individual cell because the requested size is rounded up to size class.
+
+### 7.4.2 Populating size classes
+
+- How to create cells and allocate memory for it?
+- Big bag of pages block-based allocation
+    - Use a separate allocator that allocates large blocks of size B.
+    - When a request for size class s < B comes, allocate a block of size B, split it into cells of size s, and add it to the corresponding free list.
+    - Each block is associated to a size class. Stored either in block itself, or auxiliary table. Auxiliary table leads to fewer TLB misses and avoids block header contention for same cache sets.
+    - We will waste half a block B on average, as a whole block is allocated for a size class. But, per cell metadata is reduced.
+    - Simplifies recombining of cells. Cells are recombined only if all cells in block is free. Block is then returned to block pool.
